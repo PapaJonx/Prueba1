@@ -1,26 +1,81 @@
-# Xcode
-#
-build/
-*.pbxuser
-!default.pbxuser
-*.mode1v3
-!default.mode1v3
-*.mode2v3
-!default.mode2v3
-*.perspectivev3
-!default.perspectivev3
-xcuserdata
-*.xccheckout
-*.moved-aside
-DerivedData
-*.hmap
-*.ipa
-*.xcuserstate
+clear all,close all,
 
-# CocoaPods
-#
-# We recommend against adding the Pods directory to your .gitignore. However
-# you should judge for yourself, the pros and cons are mentioned at:
-# http://guides.cocoapods.org/using/using-cocoapods.html#should-i-ignore-the-pods-directory-in-source-control
-#
-#Pods/
+ti = 10;%tiempo de procesamiento 4/44100;
+N = 100;%Orden
+fc = 15e3;%frecuencia de corte del filtro en hertz
+
+[x, fs, bits] = wavread('Ride.wav');
+% fs=fs*2;
+%Stereo to mono and clipping our desire time window
+x = x(10e3:10*fs+10e3);
+% x = x*offset;
+mb = 10;%Muestras por bit
+beta = 0;%Factor de rolloff
+rb = fs/mb;%Tasa de bits
+tp = 1/rb;%Tiempo por bit
+
+%%
+%Filtro pasa bajas
+b = fir2(N,[0 fc/fs fc/fs 1],[1 1 0 0]);
+x = filter(b, 1, x);%filtrado de señal con coeficientes
+
+%Normalization and discretization
+x = x./max(abs(x));
+x = floor(x*((2^bits - 1)/2) + ((2^bits - 1)/2));%redondeo a entero mas cercano
+
+%Conversion a binario y trama
+x = de2bi(x, bits);
+x = x';
+x = x(:);
+
+%pulso formador (sinc)
+[p t] = rcpulse(beta, mb, tp, 1/fs);
+tmp = zeros(1, numel(x)*mb);
+tmp(1:mb:end) = 2*x-1;%this is to find all 0 in array and set them to -1
+x = conv(p, tmp);
+delay = floor(numel(p)/2);
+x = x(delay+1:end-delay);
+
+%Normalizacion de la potencia
+x = x./sqrt(var(x));
+% plot(x)
+% hold on,
+% plot(tmp,'k')
+
+%Poder de ruido y el SNR
+N02 = 1./(fc*10.^(0:0.3:3));%N02=N0/2
+Pn = N02.*fs;%potencia por cada N02
+
+%%
+%en este ciclo for vamos a rotar cada valor del N02
+for i = 1:numel(N02)
+    Ruido = randn(1,numel(x)); %Crear y sumar el ruido
+    Ruido = Ruido * sqrt(Pn(i));
+    Ruido_fil = conv(b,Ruido);
+    Pn_D = var(Ruido_fil);
+    SNR(i) = (10*log10(1/Pn_D));
+    xn = conv(b, x + Ruido);
+    xn = xn(delay+1:end-delay);
+%     plot(xn, 'r')
+    
+    xs = xn(1:mb:end);%Muestreo
+    
+    xs = xs > 0;%Pregunta
+    tmp(1:mb:end) = 2*xs - 1;
+%     plot(tmp, 'g')
+    
+    %DAC
+    xn = zeros(1, numel(xs)/bits);
+%     for j = 1:numel(xs)/bits;
+%         xn(j) = bi2de(xs((j-1)*bits + 1:bits*j));
+%     end
+    
+    xn = reshape(xs, bits, numel(xn))';
+    xn = bi2de(xn);%Binario a decimal
+    
+    xn = xn - 2^(bits - 1);
+    xn = 0.999*xn./max(abs(xn));
+    file = strcat('Ride_SNR_',int2str(SNR(i)),'dB_digital.wav');
+    wavwrite(xn, fs, file);
+    
+end
